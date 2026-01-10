@@ -113,7 +113,7 @@ class FirmwareCtx: # pylint: disable=too-many-instance-attributes
     #   ---------------------------------------------------------
     version:        int     = 0x11                                                              # uint8_t
     mode:           int     = 0x00                                                              # uint8_t
-    rfu:            list    = field(default_factory = lambda: [0xFF] * 2)                       # uint8_t [2]
+    device_id:      int     = 0xFFFF                                                            # uint16_t
     time_stamp:     list    = field(default_factory = generate_timestamp)                       # uint32_t
     firmware_size:  int     = 0                                                                 # uint32_t
     firmware_crc32: int     = 0                                                                 # uint32_t
@@ -205,14 +205,14 @@ class FirmwareCtx: # pylint: disable=too-many-instance-attributes
     def get_descr_data_1st_chunk(self):
         """
         Constructs the first part of the header descriptor (before the signature).
-        Includes version, mode, RFU, timestamp, size, and CRC.
+        Includes version, mode, device ID, timestamp, size, and CRC.
         
         :return: List of bytes for the first header chunk.
         """
         descr = []
         descr.append(self.version)
         descr.append(self.mode)
-        descr += self.rfu
+        descr += list(self.device_id.to_bytes(2, byteorder='little'))
         descr += self.time_stamp
         descr += list(self.firmware_size.to_bytes(4, byteorder='little'))
         descr += list(self.firmware_crc32.to_bytes(4, byteorder='little'))
@@ -559,6 +559,16 @@ class GD32CRC: # pylint: disable=too-few-public-methods
 
 # --------------------------------------------------------------------------------------------------------
 
+def check_dev_id_value(value):
+    """ Validator for CLI hex device ID input. Checks if string is hex and has correct length. """
+    value = value.upper().removeprefix("0X")
+    if not all(char in string.hexdigits for char in value):
+        raise SystemExit("ERROR: Device ID value is not a hexadecimal string")
+    if len(value) != 4:
+        raise SystemExit(f"ERROR: Correct device ID length is 2 bytes, and there are: {str(len(value) / 2)} bytes.")
+    return str(value)
+
+
 def check_key_value(value):
     """ Validator for CLI hex key input. Checks if string is hex and has correct length. """
     if not all(char in string.hexdigits for char in value):
@@ -591,14 +601,15 @@ def check_file_type(value):
 def parse_input_args(priv_key_fname: str):
     """ Configures argparse and parses CLI arguments. """
     parser = argparse.ArgumentParser()
-    parser.add_argument("--P256gen", action="store_true", help = "Generate Elliptic Curve P-256 key pair")
-    parser.add_argument("--privKeyPath", type = str, nargs = '?', const = priv_key_fname, default = priv_key_fname, help = "Path to Elliptic Curve P-256 private key PEM file")
-    parser.add_argument("--privKeyPwd", type = str, nargs = '?', const = 'ask', default = None, help = "Elliptic Curve P-256 private key password")
-    parser.add_argument("--pubKeyGet", action="store_true", help = "Extract Elliptic Curve P-256 public key from private key")
+    parser.add_argument("--P256gen", action="store_true", help = "generate elliptic curve P-256 key pair")
+    parser.add_argument("--privKeyPath", type = str, nargs = '?', const = priv_key_fname, default = priv_key_fname, help = "path to elliptic curve P-256 private key PEM file")
+    parser.add_argument("--privKeyPwd", type = str, nargs = '?', const = 'ask', default = None, help = "elliptic curve P-256 private key password")
+    parser.add_argument("--pubKeyGet", action="store_true", help = "extract elliptic curve P-256 public key from private key")
     parser.add_argument("--cipher", type = check_cipher_type, nargs = '?', const = 'AES256', default = 'NONE', help = "firmware encryption algorithm: [NONE, AES256]")
     parser.add_argument("--key", type = check_key_value, help = f"current [AES256] encryption key [{2 * KEY_SIZE} hex characters -> {KEY_SIZE} bytes]]")
-    parser.add_argument("--file", type = check_file_type, help = "firmware file to be processed")
     parser.add_argument("--newKey", type = check_key_value, help = f"NEW [AES256] cryptographic key to be included in the firmware image [{2 * KEY_SIZE} hex characters -> {KEY_SIZE} bytes]")
+    parser.add_argument("--file", type = check_file_type, help = "firmware file to be processed")
+    parser.add_argument("--devID", type = check_dev_id_value, nargs = '?', const = 'FFFF', default = 'FFFF', help = "device ID [4 hex characters -> 2 bytes]]")
     return parser.parse_args()
 
 
@@ -643,6 +654,7 @@ def write_firmware_to_file(path: str, firmware: list[int]):
         out_file_path = file_path + '.signed.bin'
         with open(out_file_path, "wb") as out_file:
             out_file.write(bytearray(firmware))
+        print(f"File: {out_file_path} has been saved successfully.")
     except Exception as e:
         raise SystemExit(f"ERROR: {repr(e)} while trying to write to file: {out_file_path}") from e # type: ignore
 
@@ -679,9 +691,17 @@ def build_firmware(fw_ctx: FirmwareCtx, args: argparse.Namespace, manager: ECCMa
     # 3. Data Processing (Integrity & Encryption)
     fw_ctx.set_hash_type('SHA256')
     fw_ctx.firmware, fw_ctx.firmware_size = read_binary_from_file(args.file)
+    if len(fw_ctx.firmware) % 4 != 0:
+        raise SystemExit("ERROR: Firmware is corrupted! Size of the firmware should be a multiple of size of 'uint32_t' !")
+    if all(x == 0xFF for x in fw_ctx.firmware[-4:]):
+        fw_ctx.firmware += [0xFE, 0xED, 0xBE, 0xEF]
+        fw_ctx.firmware_size += 4
+        print("Potential firmware activation issue - padding added.")
 
     gd32crc = GD32CRC()
     fw_ctx.firmware_crc32 = gd32crc.crc32(fw_ctx.firmware)
+
+    fw_ctx.device_id = int(args.devID, 16)
 
     if encrypt_enabled:
         cipher_key = list(bytearray.fromhex(args.key))

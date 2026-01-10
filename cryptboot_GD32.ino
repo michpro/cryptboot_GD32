@@ -136,8 +136,13 @@ static inline void loadBootloaderData(void)
 }
 
 /**
- * @brief Verifies firmware metadata version, timestamp (anti-rollback), and size.
- * @return true if firmware is eligible for processing.
+ * @brief Verifies firmware metadata version, timestamp (anti-rollback), hardware compatibility, and size.
+ * @details This function performs several safety checks before allowing the update:
+ * - Version check: Ensures header protocol compatibility.
+ * - Hardware ID check: Validates that the firmware was compiled for this specific Device ID.
+ * - Anti-rollback: (Optional) Ensures the new firmware timestamp is newer than the current one.
+ * - Size check: Ensures the binary fits within the allocated application partition.
+ * * @return true if firmware is eligible for processing and compatible with this hardware.
  */
 static inline bool isFirmwareSchouldBeProcessed(void)
 {
@@ -150,6 +155,7 @@ static inline bool isFirmwareSchouldBeProcessed(void)
         &&  (true == MODE_FIRMWARE_CIPHER_OK())
         &&  (BOOTLOADER_DATA_VERSION == firmwareConfig.version)
         &&  ((firmwareConfig.timeStamp > bootConfig.timeStamp) || (0xFFFFFFFF == bootConfig.timeStamp))
+        &&  (DEVICE_ID == firmwareConfig.deviceId)
         &&  (firmwareConfig.firmwareSize > 0)
         &&  (firmwareConfig.firmwareSize <= APP_MAX_SIZE))
 #else
@@ -161,11 +167,18 @@ static inline bool isFirmwareSchouldBeProcessed(void)
         &&  (BOOTLOADER_DATA_VERSION == firmwareConfig.version)
         &&  (firmwareConfig.timeStamp != 0xFFFFFFFF)
         &&  (firmwareConfig.timeStamp != bootConfig.timeStamp)
+        &&  (DEVICE_ID == firmwareConfig.deviceId)
         &&  (firmwareConfig.firmwareSize > 0)
         &&  (firmwareConfig.firmwareSize <= APP_MAX_SIZE))
 #endif
     {
-        result = true;
+        uint32_t eof {0xFFFFFFFF};                                  // data at End Of File
+        Flash::read((FIRMWARE_STORE_BASE_ADDRESS + sizeof(firmwareConfig) - sizeof(eof)) + firmwareConfig.firmwareSize, (uint8_t *)&eof, sizeof(eof));
+
+        if (0xFFFFFFFF != eof)
+        {
+            result = true;
+        }
     }
     return result;
 }
@@ -181,7 +194,7 @@ static inline bool isFirmwareSchouldBeProcessed(void)
 static inline bool isFirmwareSignatureOk(void)
 {
     constexpr uint32_t  FIRST_CHUNK_SIZE            {sizeof(firmwareConfig.version)      + sizeof(firmwareConfig.mode) +
-                                                     sizeof(firmwareConfig.rfuA)         + sizeof(firmwareConfig.timeStamp) +
+                                                     sizeof(firmwareConfig.deviceId)     + sizeof(firmwareConfig.timeStamp) +
                                                      sizeof(firmwareConfig.firmwareSize) + sizeof(firmwareConfig.firmwareCrc32)};
     constexpr uint32_t  SECOND_CHUNK_SIZE           {sizeof(firmwareConfig.cipherIv)     + sizeof(firmwareConfig.newKey)};
 

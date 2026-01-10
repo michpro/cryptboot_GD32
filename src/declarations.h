@@ -35,6 +35,14 @@ Use firmware_image_builder.py script to generate it.
 #define USE_LED                     1                               ///< Enable status signaling via onboard LED
 #define APPLICATION_CRC_CHECK       1                               ///< Verify App integrity using hardware CRC32 on every boot
 
+/**
+ * @brief Unique Hardware Platform Identifier.
+ * @details This ID must be unique for each product type or hardware revision. 
+ * The bootloader compares this value against the 'deviceId' field in the 
+ * incoming firmware header to prevent cross-flashing between different devices.
+ */
+const uint16_t DEVICE_ID            {0xFFFF};
+
 // --- Memory Partitioning ---
 
 #if defined(ARDUINO_UPLOAD_MAXIMUM_SIZE)
@@ -118,7 +126,7 @@ typedef struct __attribute__((packed, aligned(sizeof(uint32_t))))
 {
     uint8_t                         version;                            ///< Header protocol version (0x11)
     uint8_t                         mode;                               ///< Bitfield for crypto algorithm selection
-    uint8_t                         rfuA[2];                            ///< Reserved for alignment/future use
+    uint16_t                        deviceId;                           ///< Target Hardware ID. Must match the internal DEVICE_ID constant of the bootloader.
     uint32_t                        timeStamp;                          ///< Packed release date/time
     uint32_t                        firmwareSize;                       ///< Encrypted payload size
     uint32_t                        firmwareCrc32;                      ///< Integrity check of the decrypted image
