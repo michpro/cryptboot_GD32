@@ -713,6 +713,7 @@ gd_generic_gd32f30x.menu.mcu_clock.f8mhz_irc8m.build.fcpu_flag=-D__SYSTEM_CLOCK_
 
 # FLASH Start Offset
 gd_generic_gd32f30x.menu.offset.x00000=None
+gd_generic_gd32f30x.menu.offset.x00000.build.flash_offset_flag=-DFLASH_OFFSET=0x0000
 gd_generic_gd32f30x.menu.offset.x01000=0x01000 - first 4k
 gd_generic_gd32f30x.menu.offset.x01000.build.flash_offset=0x1000
 gd_generic_gd32f30x.menu.offset.x01000.build.flash_offset_flag=-DFLASH_OFFSET=0x1000
