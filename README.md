@@ -23,6 +23,8 @@
 
 # cryptboot GD32
 
+[![CI](https://github.com/michpro/cryptboot_GD32/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/michpro/cryptboot_GD32/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](./LICENSE)
+
 `cryptboot GD32` is a secure bootloader designed for **GigaDevice GD32** microcontrollers. It ensures that only authorized, encrypted, and signed firmware images are executed on the hardware.
 
 
