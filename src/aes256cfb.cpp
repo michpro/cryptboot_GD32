@@ -207,8 +207,7 @@ namespace AES256
                         temp[k] = sbox[temp[k]];
                     }
                     temp[0] ^= rcon[i / KEY_WORDS - 1];
-                }
-                else if ((KEY_WORDS > 6) && ((i % KEY_WORDS) == 4))
+                } else if ((KEY_WORDS > 6) && ((i % KEY_WORDS) == 4))
                 {
                     // SubWord only (specific to AES-256)
                     for (uint_fast8_t k = 0; k < 4; k++)
@@ -272,8 +271,7 @@ namespace AES256
             if (ctx.operation == aesOperation_t::ENCRYPT)
             {
                 ctx.iv[i] = buffer[i]; 
-            }
-            else
+            } else
             {
                 ctx.iv[i] = inputByte;
             }

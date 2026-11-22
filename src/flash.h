@@ -14,8 +14,7 @@
 #   error Unsupported MCU!!!
 # endif
 
-#define FLASH_BANK_1_ALLOWED    0
-
+#include "config.h"
 #include <Arduino.h>
 
 namespace Flash
@@ -49,13 +48,16 @@ namespace Flash
 
     /**
      * @brief Writes a full page of data to flash memory.
-     * Handles unlocking, erasing (if needed), and programming.
+     * Handles unlocking, erasing (if needed), programming, and readback
+     * verification. A silent bit-flip during programming is reported as
+     * failure so the caller's retry loop engages. Cost is one page read
+     * (~512 word compares, microseconds next to a millisecond-scale erase).
      * @warning The `data` buffer MUST contain exactly `PAGE_SIZE_BYTE` bytes.
      * passing a smaller buffer will cause a read overrun.
      * @param startAddress  The target address (will be aligned to the page start).
      * @param data          Pointer to the buffer containing the full page of data.
-     * @return true If the write was successful.
-     * @return false If an FMC error occurred.
+     * @return true If the write was successful and verified by readback.
+     * @return false If an FMC error or a readback mismatch occurred.
      */
     bool writePage(const uint32_t startAddress, uint8_t data[]);
 };

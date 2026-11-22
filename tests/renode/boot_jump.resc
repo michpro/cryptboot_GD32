@@ -1,0 +1,41 @@
+# Bootloader test 1: valid app + provisioned NVStorage -> jump (TEST ONLY).
+# Precondition: NVStorage holds SIZE + CRC32 matching the fake app bytes at
+# 0x08005000 (SP=RAM, PC=flash+thumb, self-loop code); RCU_RSTSCK reads 0 so
+# the OTA path is skipped. Expect: PC lands inside app range, no error loop.
+using sysbus
+$name?="cryptboot_jump"
+$bin?=@fw.elf
+
+mach create $name
+machine LoadPlatformDescription @cryptboot.repl
+
+sysbus WriteDoubleWord 0x1FFFF7E8 0x11223344
+sysbus WriteDoubleWord 0x1FFFF7EC 0x55667788
+sysbus WriteDoubleWord 0x1FFFF7F0 0x99AABBCC
+
+sysbus LoadELF $bin
+
+# Provision NVStorage (0x08004800): magic + SIZE + CRC entries.
+# @NV_DW1@/@NV_DW2@/@NV_CRC@ are filled by run_boot.py (CRC32 over app bytes).
+sysbus WriteDoubleWord 0x08004800 0xBEBAEDFE
+sysbus WriteDoubleWord 0x08004804 @NV_DW1@
+sysbus WriteDoubleWord 0x08004808 @NV_DW2@
+sysbus WriteDoubleWord 0x0800480C @NV_CRC@
+
+# Fake valid app: SP=RAM, PC=flash+thumb, self-loop code (b .)
+sysbus WriteDoubleWord 0x08005000 0x2000C000
+sysbus WriteDoubleWord 0x08005004 0x08005009
+sysbus WriteDoubleWord 0x08005008 0xE7FEE7FE
+sysbus WriteDoubleWord 0x0800500C 0xE7FEE7FE
+
+cpu PerformanceInMips 120
+emulation RunFor "00:00:05"
+
+cpu PC
+sysbus ReadDoubleWord 0xE000E010
+emulation RunFor "00:00:00.100"
+cpu PC
+sysbus ReadDoubleWord 0xE000E010
+
+log "RENODE-BOOT-CHECK-DONE"
+quit

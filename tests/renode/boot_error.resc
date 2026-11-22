@@ -1,0 +1,31 @@
+# Bootloader test 2: corrupt app, empty staging -> error blink loop (TEST ONLY).
+# Precondition: app vector table garbage (SP=0, PC=0). NVStorage is left
+# zero-init: init() formats the page (exercises FMC erase + program), SIZE
+# then reads 0 -> app invalid. Expect: PC stays inside bootloader range
+# (0x08000000..0x08005000), never jumps to app.
+using sysbus
+$name?="cryptboot_error"
+$bin?=@fw.elf
+
+mach create $name
+machine LoadPlatformDescription @cryptboot.repl
+
+sysbus WriteDoubleWord 0x1FFFF7E8 0x11223344
+sysbus WriteDoubleWord 0x1FFFF7EC 0x55667788
+sysbus WriteDoubleWord 0x1FFFF7F0 0x99AABBCC
+
+sysbus LoadELF $bin
+
+# Corrupt app vector table: SP=0 (outside RAM), PC=0 (outside flash)
+sysbus WriteDoubleWord 0x08005000 0x00000000
+sysbus WriteDoubleWord 0x08005004 0x00000000
+
+cpu PerformanceInMips 120
+emulation RunFor "00:00:05"
+
+cpu PC
+emulation RunFor "00:00:00.100"
+cpu PC
+
+log "RENODE-BOOT-CHECK-DONE"
+quit

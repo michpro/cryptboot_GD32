@@ -1,0 +1,220 @@
+name: cryptboot CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+jobs:
+  host-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      - name: Host crypto tests (NIST vectors + roundtrip)
+        run: python utils/test_crypto_host.py --cxx g++
+
+  firmware-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      - name: Install image builder dependency
+        run: python -m pip install -r firmware_image_builder/requirements.txt
+      - name: Generate ephemeral CI signing key
+        run: |
+          mkdir -p "$RUNNER_TEMP/cryptboot-ci-key"
+          (
+            cd "$RUNNER_TEMP/cryptboot-ci-key"
+            python "$GITHUB_WORKSPACE/firmware_image_builder/firmware_image_builder.py" \
+              --P256gen
+          )
+          cp "$RUNNER_TEMP/cryptboot-ci-key/bootloader_public_key.h" \
+            src/bootloader_public_key.h
+      - name: Install Arduino CLI
+        uses: arduino/setup-arduino-cli@v2
+      - name: Install GD32 core
+        run: |
+          CORE_INDEX_URL=https://raw.githubusercontent.com/CommunityGD32Cores/GD32Core-New/main/package_gd32_index.json
+          CORE_REVISION=c6c5e463129cebb578c244c170c2df7422a91a95
+          CORE_ARCHIVE="ArduinoCore-GD32-${CORE_REVISION}.zip"
+          CORE_URL="https://github.com/CommunityGD32Cores/ArduinoCore-GD32/archive/${CORE_REVISION}.zip"
+          CORE_CHECKSUM=SHA-256:81900c26b4515b1b63c8a873531c34ac748b26344ab58950efd0f478df456123
+          CORE_SIZE=6836839
+          INDEX_PATH="$RUNNER_TEMP/package_gd32_index.json"
+
+          curl --fail --location --silent --show-error "$CORE_INDEX_URL" -o "$INDEX_PATH"
+          python - "$INDEX_PATH" "$CORE_ARCHIVE" "$CORE_URL" "$CORE_CHECKSUM" "$CORE_SIZE" <<'PY'
+          import json
+          import sys
+
+          index_path, archive, url, checksum, size = sys.argv[1:]
+          with open(index_path, encoding="utf-8") as index_file:
+              index = json.load(index_file)
+          platform = next(
+              platform
+              for package in index["packages"]
+              for platform in package["platforms"]
+              if package["name"] == "GD32Community"
+              and platform["architecture"] == "gd32"
+          )
+          platform.update(
+              archiveFileName=archive,
+              url=url,
+              checksum=checksum,
+              size=size,
+          )
+          with open(index_path, "w", encoding="utf-8") as index_file:
+              json.dump(index, index_file)
+          PY
+
+          python -m http.server 8765 --bind 127.0.0.1 \
+            --directory "$RUNNER_TEMP" >"$RUNNER_TEMP/index-server.log" 2>&1 &
+          SERVER_PID=$!
+          trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
+          for attempt in $(seq 1 20); do
+            if curl --fail --silent http://127.0.0.1:8765/package_gd32_index.json >/dev/null; then
+              break
+            fi
+            sleep 0.25
+          done
+          arduino-cli core update-index --additional-urls http://127.0.0.1:8765/package_gd32_index.json
+          arduino-cli core install GD32Community:gd32 --additional-urls http://127.0.0.1:8765/package_gd32_index.json
+      - name: Compile bootloader (default, RDP_LEVEL=0)
+        run: |
+          arduino-cli compile --fqbn GD32Community:gd32:gd_generic_gd32f30x:pnum=GD32F303CC_GENERIC \
+            --output-dir build/ci cryptboot_GD32.ino
+      - name: Compile bootloader (RDP_LEVEL=1)
+        run: |
+          arduino-cli compile --fqbn GD32Community:gd32:gd_generic_gd32f30x:pnum=GD32F303CC_GENERIC \
+            --build-property compiler.cpp.extra_flags=-DRDP_LEVEL=1 \
+            --output-dir build/ci-rdp1 cryptboot_GD32.ino
+      - name: Compile bootloader (max size, RDP_LEVEL=1 + dual-bank paths)
+        run: |
+          arduino-cli compile --fqbn GD32Community:gd32:gd_generic_gd32f30x:pnum=GD32F303CC_GENERIC \
+            --build-property "compiler.cpp.extra_flags=-DRDP_LEVEL=1 -DDUAL_BANK_FLASH=1" \
+            --output-dir build/ci-max cryptboot_GD32.ino
+      - name: Compile bootloader (RDP_LEVEL=0 + dual-bank paths)
+        run: |
+          arduino-cli compile --fqbn GD32Community:gd32:gd_generic_gd32f30x:pnum=GD32F303CC_GENERIC \
+            --build-property "compiler.cpp.extra_flags=-DDUAL_BANK_FLASH=1" \
+            --output-dir build/ci-rdp0-dual cryptboot_GD32.ino
+      - name: Compile bootloader (downgrade denied)
+        run: |
+          arduino-cli compile --fqbn GD32Community:gd32:gd_generic_gd32f30x:pnum=GD32F303CC_GENERIC \
+            --build-property "compiler.cpp.extra_flags=-DDOWNGRADE_ALLOWED=0" \
+            --output-dir build/ci-downgrade-denied cryptboot_GD32.ino
+      - name: Compile bootloader (RDP_LEVEL=1 + downgrade denied)
+        run: |
+          arduino-cli compile --fqbn GD32Community:gd32:gd_generic_gd32f30x:pnum=GD32F303CC_GENERIC \
+            --build-property "compiler.cpp.extra_flags=-DRDP_LEVEL=1 -DDOWNGRADE_ALLOWED=0" \
+            --output-dir build/ci-rdp1-downgrade-denied cryptboot_GD32.ino
+      - name: Compile bootloader (RDP_LEVEL=0 + dual-bank paths + downgrade denied)
+        run: |
+          arduino-cli compile --fqbn GD32Community:gd32:gd_generic_gd32f30x:pnum=GD32F303CC_GENERIC \
+            --build-property "compiler.cpp.extra_flags=-DDUAL_BANK_FLASH=1 -DDOWNGRADE_ALLOWED=0" \
+            --output-dir build/ci-rdp0-dual-downgrade-denied cryptboot_GD32.ino
+      - name: Compile bootloader (RDP_LEVEL=1 + dual-bank paths + downgrade denied)
+        run: |
+          arduino-cli compile --fqbn GD32Community:gd32:gd_generic_gd32f30x:pnum=GD32F303CC_GENERIC \
+            --build-property "compiler.cpp.extra_flags=-DRDP_LEVEL=1 -DDUAL_BANK_FLASH=1 -DDOWNGRADE_ALLOWED=0" \
+            --output-dir build/ci-max-downgrade-denied cryptboot_GD32.ino
+      - name: Naked-main guard on CI ELF
+        run: |
+          ELF=$(ls build/ci/*.elf | head -1)
+          OBJDUMP=$(find "$HOME/.arduino15/packages" -type f \
+            -name arm-none-eabi-objdump -print -quit)
+          if [ -z "$OBJDUMP" ]; then
+            echo "arm-none-eabi-objdump not found in the installed Arduino toolchain" >&2
+            exit 1
+          fi
+          python utils/test_naked_main.py "$ELF" --objdump "$OBJDUMP"
+      - name: Size gate (18 kB bootloader budget)
+        run: |
+          python - <<'EOF'
+          from pathlib import Path
+          import sys
+          BUDGET = 18 * 1024
+          ok = True
+          for label, pattern in (("default", "build/ci/*.bin"),
+                                 ("rdp1", "build/ci-rdp1/*.bin"),
+                                 ("max", "build/ci-max/*.bin"),
+                                 ("rdp0-dual", "build/ci-rdp0-dual/*.bin"),
+                                 ("downgrade-denied", "build/ci-downgrade-denied/*.bin"),
+                                 ("rdp1-downgrade-denied", "build/ci-rdp1-downgrade-denied/*.bin"),
+                                 ("rdp0-dual-downgrade-denied", "build/ci-rdp0-dual-downgrade-denied/*.bin"),
+                                 ("max-downgrade-denied", "build/ci-max-downgrade-denied/*.bin")):
+              files = sorted(Path(".").glob(pattern))
+              assert files, f"no bin for {label}"
+              size = files[0].stat().st_size
+              status = "OK" if size <= BUDGET else "OVER"
+              print(f"{label}: {files[0].name} {size} B / {BUDGET} B [{status}]")
+              ok &= size <= BUDGET
+          sys.exit(0 if ok else 1)
+          EOF
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: cryptboot-build
+          path: |
+            build/ci/
+            build/ci-rdp1/
+            build/ci-max/
+            build/ci-rdp0-dual/
+            build/ci-downgrade-denied/
+            build/ci-rdp1-downgrade-denied/
+            build/ci-rdp0-dual-downgrade-denied/
+            build/ci-max-downgrade-denied/
+      - name: Remove ephemeral CI signing key
+        if: always()
+        run: |
+          rm -f src/bootloader_public_key.h \
+            "$RUNNER_TEMP/cryptboot-ci-key/bootloader_private_key.pem" \
+            "$RUNNER_TEMP/cryptboot-ci-key/bootloader_public_key.h"
+
+  renode-boot:
+    runs-on: ubuntu-latest
+    needs: [firmware-build]
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: cryptboot-build
+          path: build/ci-download/
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      - name: Install Renode
+        run: |
+          RENODE_VER=1.17.0
+          curl -sL -o /tmp/renode.tar.gz \
+            "https://github.com/renode/renode/releases/download/v${RENODE_VER}/renode-${RENODE_VER}.linux-portable.tar.gz"
+          mkdir -p /tmp/renode
+          tar xzf /tmp/renode.tar.gz -C /tmp/renode
+          RENODE_DIR=$(dirname "$(find /tmp/renode -name renode -type f | head -1)")
+          echo "$RENODE_DIR" >> "$GITHUB_PATH"
+          echo "RENODE_DIR=$RENODE_DIR" >> "$GITHUB_ENV"
+          "$RENODE_DIR/renode" --version
+
+      - name: Run Renode boot tests (jump + error)
+        run: |
+          ELF=$(ls build/ci-download/ci/*.elf | head -1)
+          python tests/renode/run_boot.py --renode "$RENODE_DIR" \
+            --elf "$ELF" --scenario all --timeout 300 2>&1 | tee renode-boot.log
+          grep -q "cryptboot renode: 2/2 passed" renode-boot.log
+
+      - name: Upload Renode log
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: renode-boot-log
+          path: renode-boot.log

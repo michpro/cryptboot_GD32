@@ -1,0 +1,197 @@
+// cryptboot_GD32 Renode platform (TEST ONLY).
+//
+// GD32F303CC minimal model for bootloader system tests: flash/RAM,
+// NVIC+SysTick+DWT, GPIOA/B (LED PB2), RCU/PMU/FMC/CRC stubs with the real
+// GD32 register layout (stabilization flags follow enable bits, FMC
+// page-erase really clears flash to 0xFF, CRC feeds words MSB-first like
+// silicon). No binary patching — the exact CI .elf boots unmodified.
+//
+// Memory layout (declarations.h):
+//   bootloader  0x08000000 (20 kB reserved, APP_OFFSET 0x5000)
+//   NVStorage   0x08004800 (one page below app)
+//   app         0x08005000
+//   staging     0x08020000 (APP_STORE_OFFSET = half of flash)
+
+flash: Memory.MappedMemory @ sysbus 0x08000000
+    size: 0x40000
+
+sram: Memory.MappedMemory @ sysbus 0x20000000
+    size: 0xC000
+
+// Unique-ID window (GD32 96-bit UID @ 0x1FFFF7E8, 12 bytes).
+uid: Memory.MappedMemory @ sysbus 0x1FFFF400
+    size: 0x400
+
+// BKP backup registers (reset-cause handoff, bootloader writes BKP_DATA_0/1).
+// Region covers 0x40006C00-0x40006FFF (guest-page aligned, like uid).
+bkp: Memory.MappedMemory @ sysbus 0x40006C00
+    size: 0x400
+
+nvic: IRQControllers.NVIC @ sysbus 0xE000E000
+    priorityMask: 0xF0
+    systickFrequency: 120000000
+    IRQ -> cpu@0
+
+dwt: Miscellaneous.DWT @ sysbus 0xE0001000
+    frequency: 120000000
+
+cpu: CPU.CortexM @ sysbus
+    cpuType: "cortex-m4"
+    nvic: nvic
+
+// Generic GPIO ports (GD32 register layout is close enough to STM32F1 for
+// the output writes used by the bootloader: PB2 status LED).
+gpioA: GPIOPort.STM32_GPIOPort @ sysbus <0x40010800, +0x400>
+    numberOfAFs: 16
+
+gpioB: GPIOPort.STM32_GPIOPort @ sysbus <0x40010C00, +0x400>
+    numberOfAFs: 16
+
+// RCU stub: GD32 RCU register layout (CTL with IRC8MEN/STB, HXTALEN/STB,
+// PLLEN/STB; CFG0 with SCS/SCSS switch + status; CFG1; APB1EN with PMUEN;
+// RSTSCK with reset flags). Stabilization flags follow their enable bits,
+// SCS writes echo into SCSS, so the 120 MHz HXTAL SystemInit path completes.
+rcc: Python.PythonPeripheral @ sysbus 0x40021000
+    size: 0x400
+    initable: true
+    script: '''
+if request.IsInit:
+    ctl = 0x00000083
+    cfg0 = 0x00000000
+    cfg1 = 0x00000000
+    apb1en = 0x00000000
+elif request.IsRead:
+    if request.Offset == 0x00:
+        v = ctl
+        if 0 != (ctl & (1 << 0)):
+            v |= (1 << 1)
+        if 0 != (ctl & (1 << 16)):
+            v |= (1 << 17)
+        if 0 != (ctl & (1 << 24)):
+            v |= (1 << 25)
+        if 0 != (ctl & (1 << 26)):
+            v |= (1 << 27)
+        request.Value = v
+    elif request.Offset == 0x04:
+        request.Value = cfg0
+    elif request.Offset == 0x08:
+        request.Value = 0x009F0000
+    elif request.Offset == 0x1C:
+        request.Value = apb1en
+    elif request.Offset == 0x24:
+        # Real silicon sets these after power-on / pin / software reset;
+        # the bootloader's isValidCauseOfReset() needs at least one to
+        # enter loadBootloaderData() (NVStorage init + SIZE/CRC read).
+        # Emulation models a power-on reset: PORRSTF + EPRSTF + SWRSTF.
+        request.Value = (1 << 26) | (1 << 27) | (1 << 28)
+    elif request.Offset == 0x2C:
+        request.Value = cfg1
+    else:
+        request.Value = 0
+elif request.IsWrite:
+    if request.Offset == 0x00:
+        ctl = request.Value
+    elif request.Offset == 0x04:
+        cfg0 = (request.Value & ~0x0C) | ((request.Value & 0x03) << 2)
+    elif request.Offset == 0x1C:
+        apb1en = request.Value
+    elif request.Offset == 0x2C:
+        cfg1 = request.Value
+'''
+
+// PMU stub: SystemInit (120M HXTAL path) sets PMU_CTL HDEN/HDS then polls
+// PMU_CS HDRF (BIT16) / HDSRF (BIT17). Real silicon sets them when the
+// high-drive regulator is ready; here reads report ready immediately, writes
+// to CTL are accepted and ignored. No timing is modelled — boot only.
+pmu: Python.PythonPeripheral @ sysbus 0x40007000
+    size: 0x400
+    initable: true
+    script: '''
+if request.IsInit:
+    pass
+elif request.IsRead:
+    if request.Offset == 0x04:
+        request.Value = (1 << 16) | (1 << 17)
+    else:
+        request.Value = 0
+'''
+
+// FMC stub: page-erase fills 2 KB with 0xFF (PER+START with ADDR0 page).
+// Covers bootloader paths: NVStorage format/compaction, staging erase
+// (cleanStoredFirmware), app install (writePage programs words directly
+// into flash memory, like the real word-program path after unlock).
+fmc: Python.PythonPeripheral @ sysbus 0x40022000
+    size: 0x400
+    initable: true
+    script: '''
+if request.IsInit:
+    ctl0 = 0x00000080
+    addr0 = 0x00000000
+    stat0 = 0x00000000
+elif request.IsRead:
+    if request.Offset == 0x0C:
+        request.Value = stat0
+    elif request.Offset == 0x10:
+        request.Value = ctl0
+    elif request.Offset == 0x14:
+        request.Value = addr0
+    else:
+        request.Value = 0
+elif request.IsWrite:
+    if request.Offset == 0x04:
+        if 0 != (ctl0 & (1 << 7)):
+            if request.Value == 0x45670123:
+                ctl0 = ctl0 & ~(1 << 7)
+    elif request.Offset == 0x44:
+        pass
+    elif request.Offset == 0x10:
+        ctl0 = request.Value
+        if 0 != (ctl0 & (1 << 6)):
+            if 0 != (ctl0 & (1 << 1)):
+                page = addr0 & ~0x7FF
+                bus = self.GetMachine().SystemBus
+                for i in range(0, 0x800, 4):
+                    bus.WriteDoubleWord(page + i, 0xFFFFFFFF)
+            ctl0 = ctl0 & ~(1 << 6)
+            stat0 = stat0 | (1 << 5)
+    elif request.Offset == 0x14:
+        addr0 = request.Value
+'''
+
+// CRC stub (GD32 CRC @ 0x40023000, AHB1 0x40018000 + 0xB000): CRC_DATA write
+// feeds one 32-bit word MSB-first (poly 0x04C11DB7, init 0xFFFFFFFF, same as
+// silicon); CRC_DATA read returns the current value; CRC_CTL bit0 resets to
+// 0xFFFFFFFF. Replicates crc32.cpp word-wise feeding so the bootloader's
+// APPLICATION_CRC_CHECK path executes for real (no patching, no skipping).
+crc: Python.PythonPeripheral @ sysbus 0x40023000
+    size: 0x400
+    initable: true
+    script: '''
+POLY = 0x04C11DB7
+def _feed(crc, word):
+    for i in (24, 16, 8, 0):
+        crc ^= ((word >> i) & 0xFF) << 24
+        for _ in range(8):
+            if 0 != (crc & 0x80000000):
+                crc = ((crc << 1) ^ POLY) & 0xFFFFFFFF
+            else:
+                crc = (crc << 1) & 0xFFFFFFFF
+    return crc
+if request.IsInit:
+    crc = 0xFFFFFFFF
+elif request.IsRead:
+    if request.Offset == 0x00:
+        request.Value = crc
+    else:
+        request.Value = 0
+elif request.IsWrite:
+    if request.Offset == 0x00:
+        crc = _feed(crc, request.Value & 0xFFFFFFFF)
+    elif request.Offset == 0x08:
+        if 0 != (request.Value & 0x01):
+            crc = 0xFFFFFFFF
+'''
+
+sysbus:
+    init:
+        Tag <0xE0001004, 0xE0001008> "DWT_CYCCNT" 100

@@ -16,6 +16,7 @@
 #endif
 
 #include <Arduino.h>
+#include <gd32f30x_fwdgt.h>
 #include "src/declarations.h"
 
 // Forward declarations of internal functions
@@ -27,7 +28,9 @@ static inline bool isFirmwareSignatureOk(void);
 static inline bool processFirmwareData(void);
 static inline void cleanStoredFirmware(void);
 static inline bool isApplicationValid(void);
+static inline bool applyRdpLevel(void);
 static inline void jumpToApplication(void);
+static inline void feedWatchdog(void);
 static void ledBlink(uint_fast8_t count);
 static void ledToggle(uint8_t mask);
 
@@ -76,9 +79,16 @@ __attribute__((naked)) int main(void)
     // Validation and jump to the main application
     if (true == isApplicationValid())
     {
+        if (false == applyRdpLevel())
+        {
+            LED_ON();
+            while (true)
+            {
+                feedWatchdog();
+            }
+        }
         jumpToApplication();
-    } 
-    else
+    } else
     {
         // Permanent error state: Application invalid
         LED_ON();
@@ -127,7 +137,8 @@ static inline void loadBootloaderData(void)
     Flash::read(FIRMWARE_STORE_BASE_ADDRESS, (uint8_t *)&firmwareConfig, sizeof(firmwareCfg_t));
     NVStorage::init(NV_STORAGE_BASE_ADDRESS);
 
-    memset(bootConfig.key, 0xFF, sizeof(bootConfig));
+    // Missing NV entries retain invalid/sentinel defaults until overwritten.
+    memset(&bootConfig, 0xFF, sizeof(bootConfig));
 
     NVStorage::read(ID_CIPHER_KEY, bootConfig.key);
     NVStorage::read(ID_FIRMWARE_TIMESTAMP, (uint8_t *)&bootConfig.timeStamp);
@@ -216,6 +227,7 @@ static inline bool isFirmwareSignatureOk(void)
     {
         Flash::read((APP_STORE_BASE_ADDRESS + startPos), buffer, shift);
         SHA256::update(&shaCtx, buffer, shift);
+        feedWatchdog();
 
         startPos += shift;
         remainingBytes = firmwareConfig.firmwareSize - startPos;
@@ -298,6 +310,7 @@ static inline bool processFirmwareData(void)
             
             memset(dPtr, 0xFF, PAGE_SIZE_BYTE);
             ledToggle(0x04);
+            feedWatchdog();
             pageOffset += PAGE_SIZE_BYTE;
             idx = 0;
         }
@@ -310,9 +323,12 @@ static inline bool processFirmwareData(void)
     }
     if (true == result)
     {
-        memcpy(&bootConfig.firmwareSize, &firmwareConfig.firmwareSize, (sizeof(bootConfig.firmwareSize) + sizeof(bootConfig.firmwareCrc32)));
+        // timeStamp, firmwareSize and firmwareCrc32 are adjacent in both
+        // structs, so one block copy keeps the RAM mirror consistent.
+        memcpy(&bootConfig.timeStamp, &firmwareConfig.timeStamp, (sizeof(bootConfig.timeStamp) + sizeof(bootConfig.firmwareSize) + sizeof(bootConfig.firmwareCrc32)));
         result = NVStorage::write(ID_FIRMWARE_SIZE, (uint8_t *)&firmwareConfig.firmwareSize, sizeof(firmwareConfig.firmwareSize))
-              && NVStorage::write(ID_FIRMWARE_CRC, (uint8_t *)&firmwareConfig.firmwareCrc32, sizeof(firmwareConfig.firmwareCrc32));
+              && NVStorage::write(ID_FIRMWARE_CRC, (uint8_t *)&firmwareConfig.firmwareCrc32, sizeof(firmwareConfig.firmwareCrc32))
+              && NVStorage::write(ID_FIRMWARE_TIMESTAMP, (uint8_t *)&firmwareConfig.timeStamp, sizeof(firmwareConfig.timeStamp));
     }
 
     LED_OFF();
@@ -327,7 +343,7 @@ static inline void cleanStoredFirmware(void)
     uint32_t    address {FIRMWARE_STORE_BASE_ADDRESS};
     bool        result;
 
-#   if defined(FLASH_BANK_1_ALLOWED) && FLASH_BANK_1_ALLOWED != 0
+#   if DUAL_BANK_FLASH
         fmc_unlock();
 #   else
         fmc_bank0_unlock();
@@ -343,9 +359,10 @@ static inline void cleanStoredFirmware(void)
 
         address += PAGE_SIZE_BYTE;
         ledToggle(0x01);
-    } while ((address < (FIRMWARE_STORE_BASE_ADDRESS + firmwareConfig.firmwareSize)));
+        feedWatchdog();
+    } while ((address < (FIRMWARE_STORE_BASE_ADDRESS + sizeof(firmwareCfg_t) + firmwareConfig.firmwareSize)));
 
-#   if defined(FLASH_BANK_1_ALLOWED) && FLASH_BANK_1_ALLOWED != 0
+#   if DUAL_BANK_FLASH
         fmc_lock();
 #   else
         fmc_bank0_lock();
@@ -396,6 +413,46 @@ static inline bool isApplicationValid(void)
 #endif
 
 /**
+ * @brief Enforces the configured readout protection level (idempotent).
+ * @details With RDP_LEVEL=1 programs the option-byte SPC field to "under
+ * protection" (FMC_USPC) — but only if currently unprotected. Internal FMC
+ * operations (app EEPROM emulation, OTA staging writes) are unaffected:
+ * RDP Level 1 blocks external debug access only. Recovery from RDP-1 is
+ * possible solely via mass-erase (destroys bootloader + app + EEPROM).
+ * With RDP_LEVEL=0 this function is compiled out (zero Flash cost).
+ * @return true only when the configured protection is active; a successful
+ * transition resets the MCU so the option bytes are reloaded.
+ */
+static inline bool applyRdpLevel(void)
+{
+#if defined(RDP_LEVEL) && (RDP_LEVEL == 1)
+    if (SET == ob_spc_get())
+    {
+        return true;
+    }
+
+    uint8_t retry {OPERATION_RETRIES};
+    fmc_state_enum result {FMC_READY};
+    ob_unlock();
+    do
+    {
+        result = ob_security_protection_config(FMC_USPC);
+    } while ((FMC_READY != result) && --retry);
+    ob_lock();
+
+    if (FMC_READY != result)
+    {
+        return false;
+    }
+
+    NVIC_SystemReset();
+    return false;
+#else
+    return true;
+#endif
+}
+
+/**
  * @brief Performs full MCU cleanup and jumps to the application entry point.
  * Safety measures:
  * - Disables interrupts (PRIMASK).
@@ -438,6 +495,18 @@ static inline void jumpToApplication(void)
     
     __enable_irq();
     goToApplication();
+}
+
+/**
+ * @brief Reloads the independent watchdog counter (prophylactic).
+ * When FWDGT is disabled the reload key is ignored by hardware, so this is
+ * a no-op on the normal reset-entry path. It keeps long flash loops alive if
+ * the bootloader is ever entered without a system reset (direct jump) or
+ * with hardware-watchdog option bytes enabled. Never writes the start key.
+ */
+static inline void feedWatchdog(void)
+{
+    fwdgt_counter_reload();
 }
 
 /**

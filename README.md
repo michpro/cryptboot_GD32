@@ -23,6 +23,8 @@
 
 # cryptboot GD32
 
+[![CI](https://github.com/michpro/cryptboot_GD32/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/michpro/cryptboot_GD32/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](./LICENSE)
+
 `cryptboot GD32` is a secure bootloader designed for **GigaDevice GD32** microcontrollers. It ensures that only authorized, encrypted, and signed firmware images are executed on the hardware.
 
 
@@ -30,6 +32,10 @@
 ## 🚀 Key Features
 
 * **Firmware Encryption & Signing:** Protects intellectual property and ensures firmware authenticity using the [`firmware_image_builder.py`](./firmware_image_builder/README.md) tool.
+* **Readout Protection (RDP Level 1):** Optional production hardening — build with `-DRDP_LEVEL=1` to block external SWD reads after first boot. Internal FMC operations (app EEPROM emulation, OTA staging writes) are unaffected. Recovery from RDP-1 is mass-erase only. See [RELEASE-PROCEDURE.md](./RELEASE-PROCEDURE.md).
+* **Prophylactic Watchdog Feeding:** The long flash loops (`isFirmwareSignatureOk`, `processFirmwareData`, `cleanStoredFirmware`) reload the FWDGT counter once per page. With FWDGT disabled (normal System Reset entry) the reload key is ignored by hardware; it keeps the bootloader alive if ever entered without a system reset or with hardware-watchdog option bytes. The start key is never written.
+* **Verify-After-Write:** `Flash::writePage` reads the page back word-by-word before locking; a silent programming bit-flip is reported as failure so the caller's retry loop engages instead of hiding until the whole-image CRC.
+* **Host Crypto Tests:** `utils/test_crypto_host.py` checks SHA-256 NIST vectors, AES-256-CFB roundtrip, and ECDSA P-256 positive vectors (independent Python `cryptography` implementation) plus tamper rejection. Runs in CI on Ubuntu.
 * **Arduino Integration:** Optimized for development within the Arduino IDE using the [ArduinoCore-GD32](https://github.com/CommunityGD32Cores/ArduinoCore-GD32) project.
 * **Vector Table Management:** Automated handling of application entry points via specialized constructor functions.
 
@@ -120,7 +126,9 @@ To perform a full or partial sector erase:
     ```bash
     .\bin\openocd.exe -s .\scripts -f interface/cmsis-dap.cfg -c "set CPUTAPID 0" -f target/stm32f1x.cfg -c "transport select swd; flash init; init; reset halt; flash erase_sector 0 9 last; reset; shutdown"
     ```
-    _**Note**: **Sector 9** is reserved for internal bootloader metadata, including the firmware CRC32 checksum, AES256 encryption key, timestamp, and firmware size. The user application itself is stored and executed starting from **Sector 10**._
+    _*Note: **Sector 9** is reserved for internal bootloader metadata, including the firmware CRC32 checksum, AES256 encryption key, timestamp, and firmware size. The user application itself is stored and executed starting from **Sector 10**._
+
+> **Production configuration:** set a real `DEVICE_ID` (never ship `0xFFFF`), build with `-DRDP_LEVEL=1`, and set `DOWNGRADE_ALLOWED=0` (`src/config.h`). Keep the private key offline — only `bootloader_public_key.h` belongs next to the sources. Full ceremony in [RELEASE-PROCEDURE.md](./RELEASE-PROCEDURE.md).
 
 ### 3. Upload Signed Application
 To upload your processed binary to the specific application offset (e.g., `0x08020000`):
@@ -159,7 +167,7 @@ If your bootloader configuration requires encrypted firmware, provide a 32-byte 
 ```bash
 python firmware_image_builder.py --file Blink.ino.bin --cipher AES256 --key 000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F
 ```
-*Note: The first firmware is encrypted with a default key consisting of a string of 32 0xFF numbers, and we provide the --newKey argument with a new AES256 key.*
+*Note: The first firmware is encrypted with a default key consisting of a string of 32 0xFF numbers, and we provide the --newKey argument with a new AES256 key. That first image must travel over a trusted channel only (SWD/OpenOCD or local UART) — never over an untrusted bus — then rotate immediately, see [RELEASE-PROCEDURE.md](./RELEASE-PROCEDURE.md).*
 
 
 ## 📄 License
@@ -172,4 +180,4 @@ This software is released under the **MIT License**.
 ## Support
 If You find my projects interesting and You wanted to support my work, You can give me a cup of coffee or a keg of beer :)
 
-[![PayPal Direct](https://badgen.net/badge/icon/Support%20me%20by%20PayPal?icon=kofi&label&scale=1.5&color=blue)](https://www.paypal.me/michpro)&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[![ko-fi](https://badgen.net/badge/icon/Support%20me%20on%20Ko-fi?icon=kofi&label&scale=1.5&color=red)](https://ko-fi.com/F1F24CEW1)&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[![Coinbase](https://badgen.net/badge/icon/Support%20me%20with%20cryptocurrencies?icon=kofi&label&scale=1.5&color=blue)](https://commerce.coinbase.com/checkout/ec299320-cbed-475d-976e-fdf37c1ac3d0)
+[![PayPal Direct](https://badgen.net/badge/icon/Support%20me%20by%20PayPal?icon=kofi&label&scale=1.5&color=blue)](https://www.paypal.me/michpro)&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[![ko-fi](https://badgen.net/badge/icon/Support%20me%20on%20Ko-fi?icon=kofi&label&scale=1.5&color=red)](https://ko-fi.com/F1F24CEW1)
