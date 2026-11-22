@@ -26,7 +26,7 @@ namespace NVStorage
     // Internal State
     namespace
     {
-#   if defined(USE_ONLY_FLASH_BANK0) && USE_ONLY_FLASH_BANK0 != 1
+#   if DUAL_BANK_FLASH
         constexpr uint32_t  MAX_PAGE_SIZE   {4096};                 ///< Maximum supported sector size
         uint32_t            pageSize;                               ///< Calculated page size in bytes
 #   else
@@ -167,7 +167,7 @@ namespace NVStorage
 
         baseAddress = Flash::getPageStartAddress(startAddress);
 
-#   if defined(USE_ONLY_FLASH_BANK0) && USE_ONLY_FLASH_BANK0 != 1
+#   if DUAL_BANK_FLASH
         pageSize = Flash::getPageSizeByte(startAddress);
 #   endif
 
@@ -176,7 +176,7 @@ namespace NVStorage
         if (magic != PAGE_IDENTITY)
         {
             // Format Page
-#       if defined(FLASH_BANK_1_ALLOWED) && FLASH_BANK_1_ALLOWED != 0
+#       if DUAL_BANK_FLASH
             fmc_unlock();
 #       else
             fmc_bank0_unlock();
@@ -189,7 +189,7 @@ namespace NVStorage
                 ret = (FMC_READY == fmc_word_program(baseAddress, PAGE_IDENTITY));
             }
 
-#       if defined(FLASH_BANK_1_ALLOWED) && FLASH_BANK_1_ALLOWED != 0
+#       if DUAL_BANK_FLASH
             fmc_lock();
 #       else
             fmc_bank0_lock();
@@ -271,7 +271,7 @@ namespace NVStorage
         }
 
         // Direct Flash Programming
-#   if defined(FLASH_BANK_1_ALLOWED) && FLASH_BANK_1_ALLOWED != 0
+#   if DUAL_BANK_FLASH
         fmc_unlock();
 #   else
         fmc_bank0_unlock();
@@ -311,7 +311,7 @@ namespace NVStorage
             }
         }
         
-#   if defined(FLASH_BANK_1_ALLOWED) && FLASH_BANK_1_ALLOWED != 0
+#   if DUAL_BANK_FLASH
         fmc_lock();
 #   else
         fmc_bank0_lock();

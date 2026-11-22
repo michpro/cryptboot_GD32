@@ -10,6 +10,7 @@
 
 #pragma once
 
+#include "config.h"
 #include "sha256.h"
 #include "aes256cfb.h"
 #include "p256.h"
@@ -28,12 +29,6 @@
 File not found: bootloader_public_key.h \
 Use firmware_image_builder.py script to generate it.
 #endif
-
-// --- Bootloader Feature Configuration ---
-
-#define DOWNGRADE_ALLOWED           1                               ///< Permit installation of firmware with an older timestamp
-#define USE_LED                     1                               ///< Enable status signaling via onboard LED
-#define APPLICATION_CRC_CHECK       1                               ///< Verify App integrity using hardware CRC32 on every boot
 
 /**
  * @brief Unique Hardware Platform Identifier.

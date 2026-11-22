@@ -13,7 +13,7 @@
 
 namespace Flash
 {
-# if defined(FLASH_BANK_1_ALLOWED) && FLASH_BANK_1_ALLOWED != 0
+# if DUAL_BANK_FLASH
     uint32_t getPageSizeByte(const uint32_t address)
     {
         return (FMC_BANK0_END_ADDRESS > address) ? 2048 : 4096;
@@ -72,7 +72,7 @@ namespace Flash
         uint32_t    address {getPageStartAddress(startAddress)};
 
         // 1. Critical Section: Unlock Flash Memory Controller
-#   if defined(FLASH_BANK_1_ALLOWED) && FLASH_BANK_1_ALLOWED != 0
+#   if DUAL_BANK_FLASH
         fmc_unlock();
 #   else
         fmc_bank0_unlock();
@@ -103,8 +103,27 @@ namespace Flash
             } while ((0 != (address % pageSize)) && (true == result));
         }
 
-        // 4. Critical Section: Lock Flash Memory Controller
-#   if defined(FLASH_BANK_1_ALLOWED) && FLASH_BANK_1_ALLOWED != 0
+        // 4. Verify by readback before locking: a silent programming bit-flip
+        // must surface here (caller's retry loop engages) instead of hiding
+        // until the whole-image CRC check. Read cost is negligible next to
+        // erase/program time, and no extra RAM is needed (word-by-word).
+        if (true == result)
+        {
+            const uint32_t  *expect {(const uint32_t *)data};
+            const uint32_t  *actual {(const uint32_t *)address - (getPageSizeByte(startAddress) / sizeof(uint32_t))};
+            const uint32_t  *end    {expect + (getPageSizeByte(startAddress) / sizeof(uint32_t))};
+
+            while ((expect < end) && (true == result))
+            {
+                if (*expect++ != *actual++)
+                {
+                    result = false;
+                }
+            }
+        }
+
+        // 5. Critical Section: Lock Flash Memory Controller
+#   if DUAL_BANK_FLASH
         fmc_lock();
 #   else
         fmc_bank0_lock();

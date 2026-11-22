@@ -17,7 +17,7 @@
 #   error Unsupported MCU!!!
 #endif
 
-#define USE_ONLY_FLASH_BANK0    1
+#include "config.h"
 
 /**
  * @namespace NVStorage
