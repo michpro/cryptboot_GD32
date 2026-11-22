@@ -39,8 +39,51 @@ jobs:
         uses: arduino/setup-arduino-cli@v2
       - name: Install GD32 core
         run: |
-          arduino-cli core update-index --additional-urls https://raw.githubusercontent.com/CommunityGD32Cores/GD32Core-New/main/package_gd32_index.json
-          arduino-cli core install GD32Community:gd32 --additional-urls https://raw.githubusercontent.com/CommunityGD32Cores/GD32Core-New/main/package_gd32_index.json
+          CORE_INDEX_URL=https://raw.githubusercontent.com/CommunityGD32Cores/GD32Core-New/main/package_gd32_index.json
+          CORE_REVISION=c6c5e463129cebb578c244c170c2df7422a91a95
+          CORE_ARCHIVE="ArduinoCore-GD32-${CORE_REVISION}.zip"
+          CORE_URL="https://github.com/CommunityGD32Cores/ArduinoCore-GD32/archive/${CORE_REVISION}.zip"
+          CORE_CHECKSUM=SHA-256:81900c26b4515b1b63c8a873531c34ac748b26344ab58950efd0f478df456123
+          CORE_SIZE=6836839
+          INDEX_PATH="$RUNNER_TEMP/package_gd32_index.json"
+
+          curl --fail --location --silent --show-error "$CORE_INDEX_URL" -o "$INDEX_PATH"
+          python - "$INDEX_PATH" "$CORE_ARCHIVE" "$CORE_URL" "$CORE_CHECKSUM" "$CORE_SIZE" <<'PY'
+          import json
+          import sys
+
+          index_path, archive, url, checksum, size = sys.argv[1:]
+          with open(index_path, encoding="utf-8") as index_file:
+              index = json.load(index_file)
+          platform = next(
+              platform
+              for package in index["packages"]
+              for platform in package["platforms"]
+              if package["name"] == "GD32Community"
+              and platform["architecture"] == "gd32"
+          )
+          platform.update(
+              archiveFileName=archive,
+              url=url,
+              checksum=checksum,
+              size=size,
+          )
+          with open(index_path, "w", encoding="utf-8") as index_file:
+              json.dump(index, index_file)
+          PY
+
+          python -m http.server 8765 --bind 127.0.0.1 \
+            --directory "$RUNNER_TEMP" >"$RUNNER_TEMP/index-server.log" 2>&1 &
+          SERVER_PID=$!
+          trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
+          for attempt in $(seq 1 20); do
+            if curl --fail --silent http://127.0.0.1:8765/package_gd32_index.json >/dev/null; then
+              break
+            fi
+            sleep 0.25
+          done
+          arduino-cli core update-index --additional-urls http://127.0.0.1:8765/package_gd32_index.json
+          arduino-cli core install GD32Community:gd32 --additional-urls http://127.0.0.1:8765/package_gd32_index.json
       - name: Compile bootloader (default, RDP_LEVEL=0)
         run: |
           arduino-cli compile --fqbn GD32Community:gd32:gd_generic_gd32f30x:pnum=GD32F303CC_GENERIC \

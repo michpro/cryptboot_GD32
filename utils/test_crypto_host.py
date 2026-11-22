@@ -1,7 +1,7 @@
 """
 Host tests for cryptboot_GD32 crypto (no hardware needed).
 
-Compiles sha256/aes256cfb/p256/crc32 with g++ against a minimal
+Compiles sha256/aes256cfb/p256 with g++ against a minimal
 Arduino.h stub and checks NIST vectors + cross-implementation
 agreement with Python (hashlib) and firmware_image_builder.
 
@@ -32,7 +32,6 @@ DRIVER = r"""
 #include "sha256.h"
 #include "aes256cfb.h"
 #include "p256.h"
-#include "crc32.h"
 static int failures = 0;
 #define CHECK(cond, label) do { \
     if (!(cond)) { printf("FAIL %s\n", label); ++failures; } \
@@ -124,7 +123,7 @@ def main(argv=None) -> int:
         tmpdir = Path(tmp)
         (tmpdir / "Arduino.h").write_text(STUB, encoding="utf-8")
         (tmpdir / "driver.cpp").write_text(DRIVER, encoding="utf-8")
-        sources = ["sha256.cpp", "aes256cfb.cpp", "p256.cpp", "crc32.cpp"]
+        sources = ["sha256.cpp", "aes256cfb.cpp", "p256.cpp"]
         cmd = [args.cxx, "-std=c++17", "-O1", "-I", str(tmpdir),
                "-I", str(SRC), str(tmpdir / "driver.cpp")] + \
             [str(SRC / s) for s in sources] + ["-o", str(tmpdir / "t")]
